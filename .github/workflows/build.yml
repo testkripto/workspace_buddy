@@ -1,0 +1,64 @@
+name: Build Windows App
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unzip project
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Recurse -Filter *.zip -File | Select-Object -First 1
+          if (-not $zip) { Write-Error "No .zip found in repo."; exit 1 }
+          Write-Host "Found zip: $($zip.FullName)"
+          Expand-Archive -Path $zip.FullName -DestinationPath extracted -Force
+
+      - name: Locate project folder
+        id: find
+        shell: pwsh
+        run: |
+          $pkg = Get-ChildItem -Path extracted -Recurse -Filter package.json -File |
+            Where-Object { $_.FullName -notmatch 'node_modules' } |
+            Select-Object -First 1
+          if (-not $pkg) { Write-Error "No package.json found in the zip."; exit 1 }
+          $dir = $pkg.Directory.FullName
+          "dir=$dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Project: $dir"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ steps.find.outputs.dir }}/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: npm install
+
+      - name: Build the app (Tauri)
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: npm run tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-buddy-windows
+          path: |
+            ${{ steps.find.outputs.dir }}/src-tauri/target/release/bundle/nsis/*.exe
+            ${{ steps.find.outputs.dir }}/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
